@@ -1,4 +1,6 @@
 ^\.travis\.yml$
 LERSIL.Rmd
 LERSIL.html
+base_DAG.png
+Bollen.png
 

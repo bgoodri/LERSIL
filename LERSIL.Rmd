@@ -14,10 +14,16 @@ output:
   ioslides_presentation:
     widescreen: yes
 ---
+<style type="text/css">
+slides > slide:not(.nobackground):after {
+  content: '';
+}
+</style>
 
 ```{r setup, include=FALSE}
 library(knitr)
 library(rstan)
+options(mc.cores = parallel::detectCores())
 ```
 
 ## Obligatory Disclosure
@@ -37,7 +43,13 @@ library(rstan)
 * Call Stan from R to draw from the posterior distribution in one example
 * Analyze the Stan output
 
-## Directed Acyclic Graph from 10-25-2014
+## Directed Acyclic Graph from [Bollen (2014)](https://books.google.com/books?id=DPBjBAAAQBAJ&lpg=PP1&dq=editions%3A_jvaHQQxxkcC&pg=PP1#v=onepage&q&f=false)
+
+![Bollen's Model](Bollen.png)
+
+## Directed Acyclic Graph with Latent Variables 
+
+![General DAG](base_DAG.png)
 
 ## Linear Structural Equation Models
 
@@ -149,19 +161,19 @@ $$\ln f\left(\left.\boldsymbol{\Lambda_y},\boldsymbol{\Lambda_x},\boldsymbol{\Ga
 ## `data` Block of a Stan Program
 
 ```{r, comment = NA, echo = FALSE}
-writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[35:52])
+writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[51:68])
 ```
 
 ## `parameters` Block of a Stan Program
 
 ```{r, comment = NA, echo = FALSE}
-writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[157:173])
+writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[166:182])
 ```
 
 ## `transformed parameters` Block of a Stan Program
 
 ```{r, comment = NA, echo = FALSE}
-writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[174:183])
+writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[183:192])
 ```
 
 where `fill_matrix` is defined (not shown) in the `functions` block at the start of the Stan program.
@@ -170,14 +182,66 @@ You can expose these user-defined Stan functions to R using `rstan::expose_stan_
 ## `model` Block of a Stan Program {.smaller}
 
 ```{r, comment = NA, echo = FALSE}
-writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[184:206])
+writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[193:215])
 ```
 
 ## `generated quantities` Block of a Stan Program
 
 ```{r, comment = NA, echo = FALSE}
-writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[218:232])
+writeLines(readLines(file.path("src", "stan_files", "LERSIL.stan"))[227:239])
 ```
-where it draws from the posterior distribution of $\boldsymbol{\eta}$ and $\boldsymbol{\xi}$ if
+and it then draws from the posterior distribution of $\boldsymbol{\eta}$ and $\boldsymbol{\xi}$ if
 the raw data are available. One of the advantages of the Bayesian approach is that you get full
 distributions of all these that coherently represent your uncertainty.
+
+## Installing **rstan** and Related R Packages
+
+- Go to the [wiki](https://github.com/stan-dev/rstan/wiki/RStan-Getting-Started) and follow the
+  relevant instructions for your operating system
+- If you install the **rstantools** package from CRAN, you can create your own R packages that
+  provide Stan models with something like
+```{r, eval = FALSE}
+rstantools::rstan_package_skeleton("LERSIL", stan_files = "LERSIL.stan")
+```
+although you also need to write some R wrappers that call `rstan::sampling` for the Stan
+program(s) you create
+- To install **LERSIL** from [GitHub](https://github.com/bgoodri/LERSIL) do
+```{r, eval = FALSE}
+devtools::install_github("bgoodri/LERSIL")
+```
+```{r, message = FALSE}
+library(LERSIL)
+```
+
+## Bollen Data {.smaller}
+
+```{r}
+data("Bollen", package = "sem")
+str(Bollen)
+round(sapply(Bollen, FUN = range), digits = 3)
+```
+
+## Executing Stan
+
+```{r, message = FALSE, warning = FALSE, results = "hide"}
+post <- LERSIL(Y = as.matrix(Bollen[ , 1:8]), X = as.matrix(Bollen[ , 9:11]),
+               Lambda_y_skeleton = Lambda_y, Lambda_x_skeleton = Lambda_x,
+               Gamma_skeleton = Gamma, B_skeleton = B,
+               sd_Lambda_y_small = 2, sd_Lambda_x_small = 2,
+               sd_Gamma_small = 2, sd_B_small = 2,
+               epsilon_sd_rate = 1, delta_sd_rate = 1)
+```
+```{r}
+dim(as.matrix(post))
+```
+```{r, eval = FALSE}
+shinystan::launch_shinystan(post)
+```
+
+## For More Information
+
+* The **rstan** R [package](https://cran.r-project.org/package=rstan) drives everything
+* The **blavaan** R [package](https://cran.r-project.org/package=blavaan) estimates similar models
+* The **rstanarm** R [package](https://cran.r-project.org/package=rstanarm) comes with many regression models
+* The **brms** R [package](https://cran.r-project.org/package=brms) generates Stan code for many regression models
+* Go to http://discourse.mc-stan.org/ to ask questions

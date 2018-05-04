@@ -28,7 +28,23 @@ functions { // you can use these in R following `rstan::expose_stan_functions("f
       }
       else out[r,c] = skeleton[r, c]; // fixed, so do not bump pos
     }
-    if (pos != (rows(free_elements) + 1)) reject("wrong number of free_elements");
+    return out;
+  }
+  
+  /*
+   * This is a bug-free version of csr_to_dense_matrix and has the same arguments
+   */
+  matrix to_dense_matrix(int m, int n, vector w, int[] v, int[] u) {
+    matrix[m, n] out = rep_matrix(0, m, n);
+    int pos = 1;
+    for (i in 1:m) {
+      int start = u[i];
+      int nnz = u[i + 1] - start;
+      for (j in 1:nnz) {
+        out[i, v[pos]] = w[pos];
+        pos += 1;
+      }
+    }
     return out;
   }
 }
@@ -80,7 +96,7 @@ data {
 
   // same things but for B
   int<lower=0> len_w4;
-  vector[len_w1] w4;
+  vector[len_w4] w4;
   int<lower=1> v4[len_w4];
   int<lower=1> u4[m + 1];
   int<lower=0> len_small_w4;
@@ -88,10 +104,10 @@ data {
   real<lower=0> sd4;
 }
 transformed data { // (re)construct skeleton matrices in Stan (not that interesting)
-  matrix[p, m] Lambda_y_skeleton = csr_to_dense_matrix(p, m, w1, v1, u1);
-  matrix[q, n] Lambda_x_skeleton = csr_to_dense_matrix(q, n, w2, v2, u2);
-  matrix[m, n] Gamma_skeleton = csr_to_dense_matrix(m, n, w3, v3, u3);
-  matrix[m, m] B_skeleton = csr_to_dense_matrix(m, m, w4, v4, u4);
+  matrix[p, m] Lambda_y_skeleton = to_dense_matrix(p, m, w1, v1, u1);
+  matrix[q, n] Lambda_x_skeleton = to_dense_matrix(q, n, w2, v2, u2);
+  matrix[m, n] Gamma_skeleton = to_dense_matrix(m, n, w3, v3, u3);
+  matrix[m, m] B_skeleton = to_dense_matrix(m, m, w4, v4, u4);
 
   matrix[m, m] I = diag_matrix(rep_vector(1, m));
 
@@ -103,38 +119,40 @@ transformed data { // (re)construct skeleton matrices in Stan (not that interest
   real NaN = not_a_number();
   // replace totally free elements in Lambda_y_skeleton with NaN
   for (i in 1:p) {
-    int pos = u1[i];
+    int pos = 1;
     for (j in 1:m) {
       if (is_inf(Lambda_y_skeleton[i,j])) len_free1 += 1;
-      if (Lambda_y_skeleton[i,j] == 0 && w1[pos] != 0) Lambda_y_skeleton[i,j] = NaN;
-      else pos += 1;
-
+      if (Lambda_y_skeleton[i,j] == 0 && (len_w1 == 0 || w1[pos] != 0)) {
+        Lambda_y_skeleton[i,j] = NaN;
+      } else pos += 1;
     }
   }
 
   // same thing but for Lambda_x_skeleton
   for (i in 1:q) {
-    int pos = u2[i];
+    int pos = 1;
     for (j in 1:n) {
       if (is_inf(Lambda_x_skeleton[i,j])) len_free2 += 1;
-      if (Lambda_x_skeleton[i,j] == 0 && w2[pos] != 0) Lambda_x_skeleton[i,j] = NaN;
-      else pos += 1;
+      if (Lambda_x_skeleton[i,j] == 0 && (len_w2 == 0 || w2[pos] != 0)) {
+        Lambda_x_skeleton[i,j] = NaN;
+      } else pos += 1;
     }
   }
   
   // same thing but for Gamma_skeleton
   for (i in 1:m) {
-    int pos = u3[i];
+    int pos = 1;
     for (j in 1:n) {
       if (is_inf(Gamma_skeleton[i,j])) len_free3 += 1;
-      if (Gamma_skeleton[i,j] == 0 && w3[pos] != 0) Gamma_skeleton[i,j] = NaN;
-      else pos += 1;
+      if (Gamma_skeleton[i,j] == 0 && (len_w3 == 0 || w3[pos] != 0)) {
+        Gamma_skeleton[i,j] = NaN;
+      } else pos += 1;
     }
   }
 
   // same thing but for B_skeleton
   for (i in 1:m) {
-    int pos = u4[i];
+    int pos = 1;
     for (j in 1:m) {
       if (j >= i && B_skeleton[i,j] != 0) 
         reject("B_skeleton must be strictly lower triangular for this model");
@@ -144,15 +162,6 @@ transformed data { // (re)construct skeleton matrices in Stan (not that interest
       else pos += 1;
     }
   }
-  
-  print("Lambda_y = ");
-  print(Lambda_y_skeleton);
-  print("Lambda_x = ");
-  print(Lambda_x_skeleton);
-  print("Gamma = ");
-  print(Gamma_skeleton);
-  print("B = ");
-  print(B_skeleton);
 }
 parameters {
   // free elements (possibly with inequality constraints) for coefficient matrices
@@ -190,11 +199,11 @@ model { // N.B.: things declared in the model block do not get saved in the outp
   // * is overloaded for matrix-matrix, matrix-vector, etc. multiplication
   matrix[p, q] top_right = Lambda_y_A * Gamma * PHI * Lambda_xt;        // top right block of Sigma
   // quad_form(V, W) = V' * W * V but is more computationally efficient
-  Sigma[1:p, 1:p] = quad_form(transpose(Lambda_y_A), quad_form(transpose(Gamma), PHI) + Psi);
+  Sigma[1:p, 1:p] = quad_form(quad_form(PHI, transpose(Gamma)) + Psi, transpose(Lambda_y_A));
   for (i in 1:p) Sigma[i,i] += square(epsilon_sd[i]);                   // top left block w/ error
   Sigma[1:p, (p + 1):(p + q)] = top_right;
-  Sigma[(p + 1):(p + q), 1:q] = transpose(top_right);
-  Sigma[(p + 1):(p + q), (p + 1):(p + q)] = quad_form(Lambda_xt, PHI);
+  Sigma[(p + 1):(p + q), 1:p] = transpose(top_right);
+  Sigma[(p + 1):(p + q), (p + 1):(p + q)] = quad_form(PHI, Lambda_xt);
   for (i in 1:q) {
     int ip = i + p;
     Sigma[ip, ip] += square(delta_sd[i]);                               // bottom right block w/ error
@@ -222,37 +231,39 @@ generated quantities { // these matrices are saved in the output but do not figu
   matrix[m, n] indirect_xi_eta = total_xi_eta - Gamma;
   matrix[m, m] total_eta_eta = A - I;
   matrix[m, m] indirect_eta_eta = total_eta_eta - B;
-  matrix[m, p] total_eta_y = Lambda_y * A;
-  matrix[m, p] indirect_eta_y = total_eta_y - Lambda_y;
-  matrix[m, p] total_xi_y = total_eta_y * Gamma; // = indirect_xi_y since there is no direct effect
+  matrix[p, m] total_eta_y = Lambda_y * A;
+  matrix[p, m] indirect_eta_y = total_eta_y - Lambda_y;
+  matrix[p, n] total_xi_y = total_eta_y * Gamma; // = indirect_xi_y since there is no direct effect
   
   matrix[N, has_data ? m : 0] eta;
   matrix[N, has_data ? n : 0] xi;
   
   if (has_data) { // all matrices defined in this local block are not saved in the output
-    matrix[n, n] Psi_star = multiply_lower_tri_self_transpose(A * L_Psi);
+    matrix[m, m] Psi_star = multiply_lower_tri_self_transpose(A * L_Psi);
     matrix[n, m] Pi_t = transpose(total_xi_eta);
     matrix[m, p] Lambda_yt = transpose(Lambda_y);
     matrix[n, q] Lambda_xt = transpose(Lambda_x);
-    matrix[m, n] cov_eta_xi = PHI * Pi_t;
-    matrix[q, n] cov_x_eta = Lambda_x * cov_eta_xi;
+    matrix[n, m] cov_eta_xi = PHI * Pi_t;
+    matrix[q, m] cov_x_eta = Lambda_x * cov_eta_xi;
     matrix[n, p] cov_y_xi = cov_eta_xi * Lambda_yt;
     matrix[q, p] cov_y_x = Lambda_x * cov_y_xi;
-    matrix[q, n] cov_x_xi = PHI * Lambda_xt;
-    matrix[n, n] cov_eta = quad_form_sym(Pi_t, PHI) + Psi_star;
+    matrix[n, q] cov_x_xi = PHI * Lambda_xt;
+    matrix[m, m] cov_eta = quad_form_sym(PHI, Pi_t) + Psi_star;
     
     matrix[p + q, p + q] top_left = append_row(
-      append_col(quad_form_sym(Lambda_yt, cov_eta) +  diag_matrix(square(epsilon_sd)), 
+      append_col(quad_form_sym(cov_eta, Lambda_yt) +  diag_matrix(square(epsilon_sd)), 
                  transpose(cov_y_x)), 
-      append_col(cov_y_x, quad_form_sym(Lambda_xt, PHI) + diag_matrix(square(delta_sd))) );
+      append_col(cov_y_x, quad_form_sym(PHI, Lambda_xt) + diag_matrix(square(delta_sd))) );
       
-    matrix[p + q, m + n] corner = append_col(cov_y_xi, cov_eta * Lambda_yt);
+    matrix[m + n, p + q] corner = transpose(append_col(
+      append_row(cov_y_xi, cov_eta * Lambda_yt),
+      append_row(cov_x_xi, transpose(cov_x_eta))));
     
     matrix[m + n, m + n] bottom_right = append_row(
       append_col(cov_eta, transpose(cov_eta_xi)), append_col(cov_eta_xi, PHI) );
     
     matrix[p + q, p + q] precision = inverse_spd(top_left);
-    matrix[m + n, m + n] L = cholesky_decompose(bottom_right - quad_form(corner, precision));
+    matrix[m + n, m + n] L = cholesky_decompose(bottom_right - quad_form(precision, corner));
     matrix[m + n, p + q] beta = corner * precision;
     for (i in 1:N) {
       row_vector[m + n] latents = transpose(multi_normal_cholesky_rng(beta * YX[i], L));

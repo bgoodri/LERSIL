@@ -24,12 +24,13 @@
 #   fixed to the specified number, which is often zero but can be any finite 
 #   value.
 # @return A list containing the sparse representation of the input matrix
-# @importFrom rstan extract_sparse_parts
 make_sparse_skeleton <- function(skeleton) {
   stopifnot(is.matrix(skeleton))
   vals <- c(t(skeleton)) # vals needs to be in row-major order
-  parts <- extract_sparse_parts(!is.na(skeleton))
-  parts$w <- vals[!is.na(vals)]
+  parts <- rstan::extract_sparse_parts(!is.na(skeleton))
+  parts$w <- as.array(vals[!is.na(vals)])
+  parts$v <- as.array(parts$v)
+  parts$u <- as.array(parts$u)
   return(parts)
 }
 
@@ -88,53 +89,59 @@ LERSIL <- function(Y, X, S = NULL, N = NULL,
     dat$N <- N
     dat$YX <- array(NA_real_, dim = c(0L, ncol(S)))
   } else {
-    dat$has_data <- 1L
+    dat$has_data <- 0L # FIXME
     if (!missing(Y)) dat$N <- NROW(Y)
     else dat$N <- NROW(X)
+    Y <- sweep(Y, 2, STATS = colMeans(Y), FUN = `-`)
+    X <- sweep(X, 2, STATS = colMeans(X), FUN = `-`)
     YX <- cbind(Y, X)
     S <- cov(YX)
-    dim(YX) <- c(1L, dim(YX))
     dat$YX <- YX
+    dat$YX <- matrix(NA_real_, 0, ncol(YX))
     dat$S <- S
   }
 
-  parts <- make_sparse_skeleton(Lambda_y)
-  dat$p <- nrow(Lambda_y)
-  dat$m <- ncol(Lambda_y)
+  parts <- make_sparse_skeleton(Lambda_y_skeleton)
+  dat$p <- nrow(Lambda_y_skeleton)
+  dat$m <- ncol(Lambda_y_skeleton)
   dat$len_w1 <- length(parts$w)
   dat$w1 <- parts$w
   dat$v1 <- parts$v
   dat$u1 <- parts$u
-  dat$small_w1 <- which(is.na(Lambda_y))
+  vals <- Lambda_y_skeleton[!is.finite(Lambda_y_skeleton)]
+  dat$small_w1 <- as.array(which(is.na(vals)))
   dat$len_small_w1 <- length(dat$small_w1)
   dat$sd1 <- ifelse(dat$len_small_w1, sd_Lambda_y_small, 0L)
   
-  parts <- make_sparse_skeleton(Lambda_x)
-  dat$q <- nrow(Lambda_x)
-  dat$n <- ncol(Lambda_x)
+  parts <- make_sparse_skeleton(Lambda_x_skeleton)
+  dat$q <- nrow(Lambda_x_skeleton)
+  dat$n <- ncol(Lambda_x_skeleton)
   dat$len_w2 <- length(parts$w)
   dat$w2 <- parts$w
   dat$v2 <- parts$v
   dat$u2 <- parts$u
-  dat$small_w2 <- which(is.na(Lambda_x))
+  vals <- Lambda_x_skeleton[!is.finite(Lambda_x_skeleton)]
+  dat$small_w2 <- as.array(which(is.na(vals)))
   dat$len_small_w2 <- length(dat$small_w2)
   dat$sd2 <- ifelse(dat$len_small_w2, sd_Lambda_x_small, 0L)
     
-  parts <- make_sparse_skeleton(Gamma)
+  parts <- make_sparse_skeleton(Gamma_skeleton)
   dat$len_w3 <- length(parts$w)
   dat$w3 <- parts$w
   dat$v3 <- parts$v
   dat$u3 <- parts$u
-  dat$small_w3 <- which(is.na(Gamma))
+  vals <- Gamma_skeleton[!is.finite(Gamma_skeleton)]
+  dat$small_w3 <- as.array(which(is.na(vals)))
   dat$len_small_w3 <- length(dat$small_w3)
   dat$sd3 <- ifelse(dat$len_small_w3, sd_Gamma_small, 0L)
   
-  parts <- make_sparse_skeleton(B)
+  parts <- make_sparse_skeleton(B_skeleton)
   dat$len_w4 <- length(parts$w)
   dat$w4 <- parts$w
   dat$v4 <- parts$v
   dat$u4 <- parts$u
-  dat$small_w4 <- which(is.na(B))
+  vals <- B_skeleton[!is.finite(B_skeleton)]
+  dat$small_w4 <- as.array(which(is.na(vals)))
   dat$len_small_w4 <- length(dat$small_w4)
   dat$sd4 <- ifelse(dat$len_small_w4, sd_B_small, 0L)
   
@@ -152,67 +159,69 @@ LERSIL <- function(Y, X, S = NULL, N = NULL,
   # ascribe R-based names to Stan parameters as much as possible
   new_names <- character()
   if (dat$p) {
-    if (is.null(rownames(Lambda_y))) {
-      if (missing(Y)) rownames(Lambda_y) <- 1:dat$p
-      else if (is.null(colnames(Y))) rownames(Lambda_y) <- 1:dat$p
-      else rownames(Lambda_y) <- colnames(Y)
+    if (is.null(rownames(Lambda_y_skeleton))) {
+      if (missing(Y)) rownames(Lambda_y_skeleton) <- 1:dat$p
+      else if (is.null(colnames(Y))) rownames(Lambda_y_skeleton) <- 1:dat$p
+      else rownames(Lambda_y_skeleton) <- colnames(Y)
     }
-    new_names <- c(new_names, paste0(rownames(Lambda_y), "_epsilon_sd"))
+    new_names <- c(new_names, paste0(rownames(Lambda_y_skeleton), "_epsilon_sd"))
   }
   if (dat$q) {
-    if (is.null(rownames(Lambda_x))) {
-      if (missing(X)) rownames(Lambda_x) <- 1:dat$q
-      else if (is.null(colnames(X))) rownames(Lambda_x) <- 1:dat$q
-      else rownames(Lambda_x) <- colnames(X) 
+    if (is.null(rownames(Lambda_x_skeleton))) {
+      if (missing(X)) rownames(Lambda_x_skeleton) <- 1:dat$q
+      else if (is.null(colnames(X))) rownames(Lambda_x_skeleton) <- 1:dat$q
+      else rownames(Lambda_x_skeleton) <- colnames(X) 
     }
-    new_names <- c(new_names, paste0(rownames(Lambda_x), "_delta_sd"))
+    new_names <- c(new_names, paste0(rownames(Lambda_x_skeleton), "_delta_sd"))
   }
   if (dat$p) {
-    if (is.null(colnames(Lambda_y))) colnames(Lambda_y) <- 1:dat$m
-    eg <- expand.grid(rownames(Lambda_y), colnames(Lambda_y))
+    if (is.null(colnames(Lambda_y_skeleton))) colnames(Lambda_y_skeleton) <- 1:dat$m
+    eg <- expand.grid(rownames(Lambda_y_skeleton), colnames(Lambda_y_skeleton))
     new_names <- c(new_names, paste("Lambda", eg[,1], eg[,2], sep = "_"))
   }
   if (dat$q) {
-    if (is.null(colnames(Lambda_x))) colnames(Lambda_x) <- 1:dat$n
-    eg <- expand.grid(rownames(Lambda_x), colnames(Lambda_y))
+    if (is.null(colnames(Lambda_x_skeleton))) colnames(Lambda_x_skeleton) <- 1:dat$n
+    eg <- expand.grid(rownames(Lambda_x_skeleton), colnames(Lambda_y_skeleton))
     new_names <- c(new_names, paste("Lambda", eg[,1], eg[,2], sep = "_"))
   }
   if (dat$m) {
-    if (is.null(rownames(Gamma))) rownames(Gamma) <- colnames(Lambda_y)
-    if (is.null(colnames(Gamma))) colnames(Gamma) <- rownames(Lambda_x)
-    eg <- expand.grid(rownames(Gamma), colnames(Gamma))
+    if (is.null(rownames(Gamma_skeleton))) rownames(Gamma_skeleton) <- colnames(Lambda_y_skeleton)
+    if (is.null(colnames(Gamma_skeleton))) colnames(Gamma_skeleton) <- rownames(Lambda_x_skeleton)
+    eg <- expand.grid(rownames(Gamma_skeleton), colnames(Gamma_skeleton))
     new_names <- c(new_names, paste("Gamma", eg[,1], eg[,2], sep = "_"))
     
-    if (is.null(rownames(B))) rownames(B) <- rownames(Gamma)
-    if (is.null(colnames(B))) colnames(B) <- rownames(B)
-    eg <- expand.grid(rownames(B), colnames(B))
+    if (is.null(rownames(B_skeleton))) rownames(B_skeleton) <- rownames(Gamma_skeleton)
+    if (is.null(colnames(B_skeleton))) colnames(B_skeleton) <- rownames(B_skeleton)
+    eg <- expand.grid(rownames(B_skeleton), colnames(B_skeleton))
     new_names <- c(new_names, paste("B", eg[,1], eg[,2], sep = "_"))
     
-    eg <- expand.grid(rownames(B), rownames(B))
+    eg <- expand.grid(rownames(B_skeleton), rownames(B_skeleton))
     new_names <- c(new_names, paste("Psi", eg[,1], eg[,2], sep = "_"))
   }
   if (dat$n) {
-    eg <- expand.grid(colnames(Lambda_x), colnames(Lambda_x))
+    eg <- expand.grid(colnames(Lambda_x_skeleton), colnames(Lambda_x_skeleton))
     new_names <- c(new_names, paste("Phi", eg[,1], eg[,2], sep = "_"))
   }
   
   if (dat$m) {
-    eg <- expand.grid(rownames(B), colnames(B))
+    eg <- expand.grid(rownames(B_skeleton), colnames(B_skeleton))
     new_names <- c(new_names, paste("A", eg[,1], eg[,2], sep = "_"))
     
-    eg <- expand.grid(rownames(B), colnames(Lambda_x))
+    eg <- expand.grid(rownames(B_skeleton), colnames(Lambda_x_skeleton))
     new_names <- c(new_names, paste("total_xi_eta", eg[,1], eg[,2], sep = "_"))
     new_names <- c(new_names, paste("indirect_xi_eta", eg[,1], eg[,2], sep = "_"))
     
-    eg <- expand.grid(rownames(B), colnames(B))
+    eg <- expand.grid(rownames(B_skeleton), colnames(B_skeleton))
     new_names <- c(new_names, paste("total_eta_eta", eg[,1], eg[,2], sep = "_"))
     new_names <- c(new_names, paste("indirect_eta_eta", eg[,1], eg[,2], sep = "_"))
-    
-    eg <- expand.grid(rownames(B), rownames(Lambda_y))
+  }
+  
+  if (dat$p) {
+    eg <- expand.grid(rownames(Lambda_y_skeleton), rownames(B_skeleton))
     new_names <- c(new_names, paste("total_eta_y", eg[,1], eg[,2], sep = "_"))
     new_names <- c(new_names, paste("indirect_eta_y", eg[,1], eg[,2], sep = "_"))
     
-    eg <- expand.grid(rownames(Lambda_x), rownames(Lambda_y))
+    eg <- expand.grid(rownames(Lambda_y_skeleton), colnames(Gamma_skeleton))
     new_names <- c(new_names, paste("indirect_xi_y", eg[,1], eg[,2], sep = "_"))
   }
   
